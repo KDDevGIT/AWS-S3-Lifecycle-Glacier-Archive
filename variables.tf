@@ -45,5 +45,18 @@ variable "noncurrent_days_glacier_ir" {
   default = 30
 }
 
+variable "noncurrent_days_deep_archive" {
+  description = "Noncurrent transition to DEEP_ARCHIVE after N Days"
+  type = number
+  default = 120
+}
+
+variable "noncurrent_expire_days" {
+  description = "Permenantly delete noncurrent versions after N days"
+  type = number
+  default = 400
+}
+
+
 
 
