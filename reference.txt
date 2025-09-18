@@ -1,0 +1,245 @@
+# Providers.tf
+terraform {
+  required_version = ">= 1.6.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.50.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.region
+}
+
+#vairables.tf
+variable "project" {
+  description = "Project tag/name"
+  type        = string
+  default     = "s3-lifecycle-glacier"
+}
+
+variable "region" {
+  description = "AWS region"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "bucket_name" {
+  description = "Globally-unique S3 bucket name"
+  type        = string
+}
+
+variable "transition_days_ia" {
+  description = "Days before moving to STANDARD_IA"
+  type        = number
+  default     = 30
+}
+
+variable "transition_days_glacier_ir" {
+  description = "Days before moving to GLACIER Instant Retrieval"
+  type        = number
+  default     = 60
+}
+
+variable "transition_days_glacier" {
+  description = "Days before moving to GLACIER (Flexible Retrieval)"
+  type        = number
+  default     = 120
+}
+
+variable "transition_days_deep_archive" {
+  description = "Days before moving to DEEP_ARCHIVE"
+  type        = number
+  default     = 180
+}
+
+variable "expire_days_current" {
+  description = "Expire current object versions after N days"
+  type        = number
+  default     = 365
+}
+
+variable "noncurrent_days_glacier_ir" {
+  description = "Noncurrent transition to GLACIER_IR after N days"
+  type        = number
+  default     = 30
+}
+
+variable "noncurrent_days_deep_archive" {
+  description = "Noncurrent transition to DEEP_ARCHIVE after N days"
+  type        = number
+  default     = 120
+}
+
+variable "noncurrent_expire_days" {
+  description = "Permanently delete noncurrent versions after N days"
+  type        = number
+  default     = 400
+}
+
+#main.tf
+locals {
+  tags = {
+    Project = var.project
+    Owner   = "Kyler"
+    Env     = "dev"
+  }
+}
+
+resource "aws_s3_bucket" "this" {
+  bucket = var.bucket_name
+  tags   = local.tags
+}
+
+# Block all public access (secure-by-default)
+resource "aws_s3_bucket_public_access_block" "this" {
+  bucket                  = aws_s3_bucket.this.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# Required for ACLs in some regions; keeps ownership sane
+resource "aws_s3_bucket_ownership_controls" "this" {
+  bucket = aws_s3_bucket.this.id
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+# Default encryption (AES256). Swap to KMS if desired.
+resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
+  bucket = aws_s3_bucket.this.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# Versioning is required for robust lifecycle rules on noncurrent versions
+resource "aws_s3_bucket_versioning" "this" {
+  bucket = aws_s3_bucket.this.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# Enforce TLS-only and deny unencrypted uploads
+data "aws_iam_policy_document" "bucket_policy" {
+  statement {
+    sid     = "DenyInsecureTransport"
+    effect  = "Deny"
+    actions = ["s3:*"]
+    resources = [
+      aws_s3_bucket.this.arn,
+      "${aws_s3_bucket.this.arn}/*"
+    ]
+    principals { type = "*"; identifiers = ["*"] }
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+
+  statement {
+    sid     = "DenyUnEncryptedObjectUploads"
+    effect  = "Deny"
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.this.arn}/*"
+    ]
+    principals { type = "*"; identifiers = ["*"] }
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:x-amz-server-side-encryption"
+      values   = ["AES256", "aws:kms"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "this" {
+  bucket = aws_s3_bucket.this.id
+  policy = data.aws_iam_policy_document.bucket_policy.json
+}
+
+# Lifecycle: apply cold-data policy to objects under the "cold/" prefix
+resource "aws_s3_bucket_lifecycle_configuration" "this" {
+  bucket = aws_s3_bucket.this.id
+
+  rule {
+    id     = "cold-data-multi-step-transition"
+    status = "Enabled"
+
+    filter {
+      prefix = "cold/"
+    }
+
+    transition { days = var.transition_days_ia           storage_class = "STANDARD_IA" }
+    transition { days = var.transition_days_glacier_ir   storage_class = "GLACIER_IR" }
+    transition { days = var.transition_days_glacier      storage_class = "GLACIER" }
+    transition { days = var.transition_days_deep_archive storage_class = "DEEP_ARCHIVE" }
+
+    expiration {
+      days = var.expire_days_current
+    }
+
+    noncurrent_version_transition {
+      noncurrent_days = var.noncurrent_days_glacier_ir
+      storage_class   = "GLACIER_IR"
+    }
+
+    noncurrent_version_transition {
+      noncurrent_days = var.noncurrent_days_deep_archive
+      storage_class   = "DEEP_ARCHIVE"
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = var.noncurrent_expire_days
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  # Optional: clean up stale multipart uploads anywhere in the bucket
+  rule {
+    id     = "abort-stale-multipart-uploads"
+    status = "Enabled"
+
+    filter {} # applies to all objects
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+}
+
+# Helpful prefixes you can use immediately
+resource "aws_s3_object" "readme_prefix_markers" {
+  for_each = toset([
+    "cold/.keep",
+    "hot/.keep",
+    "logs/.keep"
+  ])
+  bucket       = aws_s3_bucket.this.id
+  key          = each.key
+  content      = "placeholder"
+  content_type = "text/plain"
+  tags         = local.tags
+}
+
+#outputs.tf
+output "bucket_name" {
+  value = aws_s3_bucket.this.bucket
+}
+
+output "bucket_arn" {
+  value = aws_s3_bucket.this.arn
+}
+
