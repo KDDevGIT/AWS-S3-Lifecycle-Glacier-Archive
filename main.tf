@@ -157,3 +157,16 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
   }
 }
 
+# Helpful Prefixes
+resource "aws_s3_object" "readme_prefix_markers" {
+  for_each = toset([
+    "cold/.keep",
+    "hot/.keep",
+    "logs/.keep"
+  ])
+  bucket = aws_s3_bucket.this.id 
+  key = each.key
+  content = "placeholder"
+  content_type = "text/plain"
+  tags = local.tags
+}
