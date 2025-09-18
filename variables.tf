@@ -27,6 +27,12 @@ variable "transition_days_glacier" {
   default = 120
 }
 
+variable "transition_days_glacier_ir" {
+  description = "Days before moving to GLACIER Instant Retrieval"
+  type        = number
+  default     = 60
+}
+
 variable "transition_days_deep_archive" {
   description = "Days before moving to Deep Archive"
   type = number

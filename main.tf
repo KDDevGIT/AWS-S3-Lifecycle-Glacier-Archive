@@ -87,5 +87,73 @@ data "aws_iam_policy_document" "bucket_policy" {
   }
 }
 
+resource "aws_s3_bucket_policy" "this" {
+  bucket = aws_s3_bucket.this.id 
+  policy = data.aws_iam_policy_document.bucket_policy.json 
+}
 
+# Cold Data Policy
+resource "aws_s3_bucket_lifecycle_configuration" "this" {
+  bucket = aws_s3_bucket.this.id 
+
+  rule {
+    id = "cold-data-multi-step-transition"
+    status = "Enabled"
+
+    filter {
+      prefix = "cold/"
+    }
+
+    transition {
+      days = var.transition_days_ia
+      storage_class = "STANDARD_IA"
+    }
+    transition {
+      days = var.transition_days_glacier_ir 
+      storage_class = "GLACIER_IR"
+    }
+    transition {
+      days = var.transition_days_glacier
+      storage_class = "GLACIER"
+    }
+    transition {
+      days = var.transition_days_deep_archive
+      storage_class = "DEEP_ARCHIVE"
+    }
+
+    expiration {
+      days = var.expire_days_current
+    }
+
+    noncurrent_version_transition {
+      noncurrent_days = var.noncurrent_days_glacier_ir
+      storage_class = "GLACIER_IR"
+    }
+
+    noncurrent_version_transition {
+      noncurrent_days = var.noncurrent_days_deep_archive
+      storage_class = "DEEP_ARCHIVE"
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = var.noncurrent_expire_days
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  # Cleans up state multi-part uploads in bucket
+  rule {
+    id = "abort-stale-multipart-uploads"
+    status = "Enabled"
+
+    filter {}
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+}
 
